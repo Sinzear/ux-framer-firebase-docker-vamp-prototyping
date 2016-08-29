@@ -1,6 +1,6 @@
-{ InputField } = require 'inputField'
 
-# setup device for presentation
+{Firebase} = require 'firebase'
+
 device = new Framer.DeviceView();
 
 device.setupContext()
@@ -10,110 +10,150 @@ device.contentScale = 1
 deviceHeight = device.screen.height
 deviceWidth = device.screen.width
 
-app = Framer.Importer.load("app.framer/imported/app@1x")
-
 # variables to hold a scale value we’ll use later
 initialScale = 0.2
 
-# array of our actions
-actionButtons = []
+# The required information is located at https://firebase.google.com → Console → YourProject → ...
+demoDB = new Firebase
+  projectID: "frameronfire" # ... Database → first part of URL
+  secret: "mAcwiwHCHee7OnAZFVYEGPg5PhAJu2Y6H0mg5PVd" # ... Project Settings → Database → Database Secrets
+  server: 's-usc1c-nss-102.firebaseio.com'
 
-# the input element from module
-taskInput = new InputField
-  name: "task"
-  type: "text-area"
-  width:  deviceWidth
-  height: deviceHeight - app.keyboard.height
-  index: 0
-  color: "DarkCyan"
-  backgroundColor: "#f5f5f5"
-  fontSize: 200
-  indent: 120
-  placeHolder: "Add task"
-  placeHolderFocus: ""
-  autoCapitalize: true
 
-# hide some layers for the initial state
-app.actions.opacity = 0
-app.overlay.opacity = 0
-app.iconWrite.opacity = 0
-app.keyboard.opacity = 0
-app.keyboard.y = app.keyboard.height + deviceHeight
-taskInput.opacity = 0
+cards = []
+proxies = []
+cardCount = 3
 
-# set initial rotation for the icon
-app.iconWrite.rotation = -180
 
-# create an array of action layers (Add, Reminder, Task)
-for i in [0...3]
- actionButtons.push app["action#{i+1}"]
 
-# Add initial scale value to action buttons
-for action in actionButtons
- action.scale = initialScale
+# Layers ----------------------------------
 
-# define states
-app.overlay.states.add
-  openActions: { opacity: 1 }
-app.overlay.states.animationOptions = curve: "spring(400, 20, 0)"
 
-app.actions.states.add
-  openActions: { opacity: 1 }
-app.actions.states.animationOptions = curve: "spring(400, 20, 0)"
+popSFX = new VideoLayer
+  video: "blop.mp3" # by Mark DiAngelo
+  visible: false
 
-app.keyboard.states.add
-  openInput: { opacity: 1; y: deviceHeight - app.keyboard.height}
-app.keyboard.states.animationOptions = { curve: "linear", time: 0.1 }
 
-for action in actionButtons
-  action.states.add
-    openActions: { scale: 1 }
-  action.states.animationOptions = curve: "spring(500, 30, 0)"
+# Create card- and proxy-layers
+for i in [0...cardCount]
 
-app.iconPlus.states.add
-  openActions: {
-    opacity: 0,
-    rotation: 90
-  }
-app.iconPlus.states.animationOptions = curve: "spring(500, 30, 0)"
+  card = cards[i] = new Layer
+    image: "https://unsplash.it/#{Screen.width}/#{Screen.height/cardCount}?image=#{i+229}"
+    width: Screen.width
+    height: Screen.height/cardCount
+    y: Screen.height/cardCount * i
+    name: "card#{i}"
+    html: "0"
+    rotationX: -45
+    opacity: 0
+    style:
+      fontFamily: "Helvetica Neue"
+      fontSize: "120px"
+      fontWeight: "100"
+      textAlign : "center"
+      lineHeight: "#{Screen.height/cardCount}px"
+      textShadow: "0px 2px 8px rgba(0, 0, 0, 0.25)"
 
-app.iconWrite.states.add
-  openActions: {
-    opacity: 1,
-    rotation: 0
-  }
-app.iconWrite.states.animationOptions = curve: "spring(500, 30, 0)"
+  card.animate
+    properties:
+      rotationX: 0
+      opacity: 1
+    curve: "spring(50,10,0)"
+    delay: i / 2 + .5
 
-taskInput.states.add
-  openInput: { opacity: 1 }
-taskInput.states.animationOptions = curve: "spring(400, 20, 0)"
+  card.onTouchStart ->
+    @.animate
+      properties:
+        saturate: 0
+      curve: "ease-in"
+      time: .2
 
-# functions
-switchOptions = (state) ->
-  for action in actionButtons
-    action.states.switch(state)
+  # Add a Like onTouchEnd
+  card.onTouchEnd ->
 
-  app.overlay.states.switch(state)
-  app.actions.states.switch(state)
-  app.iconPlus.states.switch(state)
-  app.iconWrite.states.switch(state)
+    index = _.indexOf(cards, @) # Get index of the tapped card
 
-switchInput = (state) ->
-  taskInput.states.switch(state)
-  app.keyboard.states.switch(state)
+    # Add a new child-node at
+    demoDB.post("/likeCounts/#{index}", 0) # `post´-method can´t be null, undefined or empty, hence `0´
 
-# events
-app.floatingButton.on Events.Click, ->
-  switchOptions("openActions")
+    # We'll later count all the child-nodes at that path, which is our Like-count (1 child-node = 1 like)
 
-app.overlay.on Events.Click, ->
-  switchOptions("default")
+    @.animate
+      properties:
+        saturate: 100
+      curve: "ease-in"
+      time: .2
 
-app.action2.on Events.Click, ->
-  taskInput.index = 1
-  switchInput("openInput")
 
-app.keyboard.on Events.Click, ->
-  taskInput.index = 0
-  switchInput("default")
-  switchOptions("default")
+  # Proxy layers are used to `fade´-in Like-counts
+  proxy = proxies[i] = new Layer
+    parent: card
+    visible: false
+    name: "proxy#{i}"
+
+  # Proxy is later animated when loading data from Firebase
+  proxy.onChange "x", -> @.parent.html = Math.floor(@.x)
+
+
+# Update ----------------------------------
+
+response = (data, method, path, breadCrumb) ->
+
+# If the database at `/likeCounts´ is null/empty, create a child for each card
+  if data is null
+    for i in [0...cardCount]
+      demoDB.put("/likeCounts/#{i}", 0)
+
+
+  if path is "/" # euqals, we´re loading the whole dataset onLoad (fires only once)
+    if data? # make sure some data exists
+
+      for card,i in cards
+        likes = _.toArray(data[i]).length # convert the `data´-response to an array; get its length
+
+        # This causes the Like count to `fade´-in
+        proxies[i].animate
+          properties:
+            x: likes
+          curve: "cubic-bezier(0.86, 0, 0.07, 1)"
+          delay: i / 2
+          time: .5
+
+  else # euqals, a new like was added (to any card)
+
+# Let's find out, to wich card the like was added by
+    index = breadCrumb[0]
+
+    # Now that we know to which card the like was added, we check how many
+    # child-nodes are at that path, which is our Like-count (1 child-node = 1 like)
+    demoDB.get "/likeCounts/#{index}", (likes) ->
+
+      cards[index].html = _.toArray(likes).length
+
+      popSFX.player.play() # Play sound effect
+
+      # Heart animation
+      heart = new Layer
+        parent: cards[index]
+        size: cards[index].size
+        backgroundColor: ""
+        html: "❤"
+        style:
+          fontSize: "200px"
+          fontWeight: "100"
+          textAlign : "center"
+          lineHeight: "#{Screen.height/cardCount-10}px"
+
+      heart.animate
+        properties:
+          scale: 2
+          opacity: 0
+        curve: "cubic-bezier(0.215, 0.61, 0.355, 1)"
+        time: .5
+
+      heart.onAnimationEnd -> @.destroy()
+
+
+
+demoDB.onChange("/likeCounts", response) #
+# **Please deactivate Auto Refresh and reload manually using CMD+R!**
